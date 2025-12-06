@@ -55,12 +55,38 @@ export default function App()
    
 
    // Utility function to clear canvas
-   const clearCanvasLocal = () => {
+  //  const clearCanvasLocal = () => {
+  //   const canvas = canvasRef.current;
+  //   if(!canvas) return;
+  //   const ctx = canvas.getContext("2d");
+  //   ctx.clearRect(0,0,canvas.width,canvas.height);
+  //  }
+
+  // Utility function to clear canvas (modified to set white background)
+
+const clearCanvasLocal = () => {
+  const canvas = canvasRef.current;
+  if(!canvas) return;
+  const ctx = canvas.getContext("2d");
+  
+  // 1. Set Fill Color to White
+  ctx.fillStyle = "#FFFFFF";
+  // 2. Fill the rectangle (instead of clearing to transparent)
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+// Add this inside your App component, near other useEffects
+// Add this inside App(), near other useEffects
+useEffect(() => {
+  if (gameState === "game" && canvasRef.current) {
+    // Force white background immediately when game starts
     const canvas = canvasRef.current;
-    if(!canvas) return;
     const ctx = canvas.getContext("2d");
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-   }
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+}, [gameState]);
+
 
    // --- Canvas setup and event listeners
    useEffect(() => {
@@ -273,22 +299,26 @@ export default function App()
          const msg = payload.message || (payload.player ? `${payload.player} left.` : "A player left.");
         addMessage(msg);
       },
-      cheatingDetected: ({ drawer, message }) => {
-        addMessage(`⚠️ SYSTEM: ${message}`);
+      
 
-        // Show the visual alert
-        setAlert({
-          message: `${drawer} was caught cheating! Penalty applied.`,
-          type: "error" // we can use this to style it red
-        });
+      cheatingDetected: ({ drawer, message, scores: scoresPayload }) => {
+          // 1. Show the Alert (as we did before)
+          addMessage(`SYSTEM: ${message}`);
+          setAlert({
+            message: `${drawer} was caught cheating! -10 Points.`,
+            type: "error"
+          });
+          setTimeout(() => setAlert(null), 3000);
 
-        // Hide the alert automatically after 3 seconds
-        setTimeout(() => {
-          setAlert(null);
-        }, 3000);
+          // 2. NEW: Update the Scoreboard immediately
+          if (Array.isArray(scoresPayload)) {
+            const newScores = new Map(scoresPayload.map(s => [s.player, s.score]));
+            setScores(newScores);
+          }
       },
 
     };
+    // canvas.toDataURL("image/jpeg", 0.5)  canvas.toDataURL("image/png")
 
     Object.entries(handlers).forEach(([ev,fn]) => socket.on(ev,fn));
     return () => {
@@ -306,14 +336,14 @@ export default function App()
         const canvas = canvasRef.current;
         if (canvas) {
           // Capture image (Low quality to save data)
-          const snapshot = canvas.toDataURL("image/jpeg", 0.5); 
+          const snapshot = canvas.toDataURL("image/png"); 
           
           socket.emit("checkCheating", {
             roomId,
             snapshot
           });
         }
-      }, 4000); // Check every 4 seconds
+      }, 10000); // Check every 4 seconds
     }
 
     return () => clearInterval(interval);
@@ -628,7 +658,7 @@ export default function App()
   return (
     <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center p-4 font-sans">
       {renderAlert()}
-      
+
       {gameState === "lobby" && renderLobby()}
       {gameState === "game" && renderGame()}
       {gameState === "game_over" && renderGameOver()}

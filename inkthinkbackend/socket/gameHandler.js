@@ -1,41 +1,22 @@
-// This file contains all the game orchsteration logic, rounds in the game, guesses in the game, and all of this will be handled here
-
 import { rooms, words } from "./gameState.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from "dotenv";
 dotenv.config();
 
-// Initialize Gemini
+// --- AI SETUP ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-//const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-//const ML_API_URL = ""; // will be integrated later
-const ROUND_DURATION = 60000; // in milli-seconds
-
-// This is the Structure of the Map used to manage the state of the game
-//   players: Set(socketId),
-//   scores: Map(socketId -> number),
-//   playerOrder: Array(socketId) // snapshot at game start
-//   drawer: socketId | null,
-//   currentWord: string | null,
-//   roundActive: boolean,
-//   roundNumber: number,
-//   totalRounds: number,
-//   ongoingGame: boolean,
-//   currentRoundTimer: Timeout | null,
-//   lastMLCheckAt: number (timestamp ms) // optional
-//   remainingTime: null (Eventually will be time)
-
+const ROUND_DURATION = 60000; 
 
 // Utility function to pick the next drawer
 const pickDrawer = (room) => {
   const players = room.playerOrder;
-  let idx = room.roundNumber; // 0 - based indexing, for roundNumber
+  let idx = room.roundNumber; 
   while (idx < players.length) {
     const player = players[idx];
     if (room.players.has(player)) return player;
-    idx += 1; // Skip Invalid Players
+    idx += 1; 
     room.roundNumber += 1;
   }
   return null;
@@ -70,19 +51,16 @@ const startGame = async (io, roomId) => {
       return;
     }
 
-    // Freeze player order for the whole game
     room.playerOrder = Array.from(room.players);
     room.totalRounds = room.playerOrder.length;
     room.roundNumber = 0;
-    // Initialise scores
+    
     room.playerOrder.forEach((p) => room.scores.set(p, 0));
     room.ongoingGame = true;
     room.roundActive = false;
     room.drawer = null;
     room.currentWord = null;
     room.lastMLCheckAt = 0;
-
-    // The players who have joined the room for the game session are stored in this array
 
     io.to(roomId).emit("gameStarted", {
       totalRounds: room.totalRounds,
@@ -99,7 +77,7 @@ const startGame = async (io, roomId) => {
 };
 
 const findWinner = (roomId) => {
-  const room = rooms.get(roomId);
+  const room = rooms.get(roomId); 
   if (!room) return null;
   let max = -Infinity;
   let winnerId = null;
@@ -109,8 +87,7 @@ const findWinner = (roomId) => {
       winnerId = pid;
     }
   }
-  if(winnerId)
-  {
+  if(winnerId) {
     return room.usernames.get(winnerId);
   }
   return "Nobody";
@@ -125,7 +102,6 @@ const endGame = (roomId, io, { reason = "finished" } = {}) => {
     room.roundActive = false;
 
     const winner = findWinner(roomId);
-    // Declare the winner, i.e emit the event to the players in the room
     io.to(roomId).emit("gameEnded", {
       reason,
       scores: Array.from(room.scores).map(([id, score]) => ({
@@ -136,7 +112,7 @@ const endGame = (roomId, io, { reason = "finished" } = {}) => {
       message : `${winner} won the game. The Game ends here.`
     });
     clearRoundTimer(room);
-    rooms.delete(roomId); // delete this room
+    rooms.delete(roomId); 
   } catch (error) {
     console.log(error);
   }
@@ -153,7 +129,6 @@ const startRound = async (io, roomId) => {
     }
     const drawer = pickDrawer(room);
     if (!drawer) {
-      // If there is no-one left to draw, end the game right now
       endGame(roomId, io, { reason: "no_players_left" });
       return;
     }
@@ -164,7 +139,6 @@ const startRound = async (io, roomId) => {
 
     room.remainingTime = ROUND_DURATION;
 
-    // Drawer and the word has been decided, send this info to the players in the room
     io.to(room.drawer).emit("yourTurn", { word: room.currentWord, remainingTime: room.remainingTime });
     io.to(roomId).emit("roundStarted", {
       roundNumber: room.roundNumber,
@@ -173,7 +147,6 @@ const startRound = async (io, roomId) => {
       remainingTime: room.remainingTime 
     });
 
-    // Start a roundTimer (Give a fix time to guess the word to the players)
     clearRoundTimer(room);
     room.currentRoundTimer = setInterval(() => {
     room.remainingTime -= 1000;
@@ -184,18 +157,17 @@ const startRound = async (io, roomId) => {
     }
     else
     {
-      // Time is still-left update to anybody
       io.to(roomId).emit("timerUpdate",{
         remainingTime:room.remainingTime
       })
     }
-    }, 1000); // Run this every second
+    }, 1000); 
   } catch (error) {
     console.log(error);
   }
 };
 
-// End the current round
+// --- UPDATED END ROUND LOGIC ---
 const endRound = (io, roomId, { reason = "completed", winner = null } = {}) => {
   try {
     const room = rooms.get(roomId);
@@ -205,26 +177,33 @@ const endRound = (io, roomId, { reason = "completed", winner = null } = {}) => {
     room.roundActive = false;
     clearRoundTimer(room);
 
-    // Inform players of the current round result
-   io.to(roomId).emit("roundEnded", {
-    reason,
-    winner,
-    word: room.currentWord,
-    scores: Array.from(room.scores).map(([id, score]) => ({
-    player: room.usernames.get(id),
-    score
-  })),
-  message : "The round has ended"
-});
+    // [CHANGE 2] Penalty for Drawer if nobody guessed (Reason: timeout)
+    if (reason === "timeout") {
+        const drawerId = room.drawer;
+        if (drawerId) {
+            const currentScore = room.scores.get(drawerId) || 0;
+            // Subtract 10, but don't go below 0 (optional, remove Math.max if you want negative scores)
+            room.scores.set(drawerId, Math.max(0, currentScore - 10));
+        }
+    }
 
-    // Increment the round Number
+    io.to(roomId).emit("roundEnded", {
+      reason,
+      winner,
+      word: room.currentWord,
+      scores: Array.from(room.scores).map(([id, score]) => ({
+        player: room.usernames.get(id),
+        score
+      })),
+      message : reason === "timeout" ? "Time's up! No one guessed it." : "The round has ended"
+    });
+
     room.roundNumber += 1;
     if (room.roundNumber >= room.totalRounds) {
       endGame(roomId, io, { reason: "finished" });
       return;
     }
 
-    // Start next round after a short delay, so that client can show results
     setTimeout(() => startRound(io, roomId), 2500);
   } catch (error) {
     console.log(error);
@@ -236,19 +215,80 @@ const isCorrectGuess = (guess, actualWord) => {
   return guess.trim().toLowerCase() === actualWord.trim().toLowerCase();
 };
 
-
-
-// const checkDrawingWithML = async (snapshot) => {
-//   // will be implemented later
-// };
-// 1. Implement the AI Check function
-const checkDrawingWithML = async (snapshotBase64) => {
-  try {
-    // Remove the data URL prefix (e.g., "data:image/png;base64,")
-    const base64Data = snapshotBase64.replace(/^data:image\/(png|jpeg);base64,/, "");
-
-    const prompt = "Look at this sketch. Does it contain written letters or words that spell out the answer? If it is mostly text/words, respond with 'text'. If it is a drawing, respond with 'drawing'.";
+// const checkDrawingWithML = async (snapshotBase64) => {
+  
+//   try {
+//     const base64Data = snapshotBase64.replace(/^data:image\/(png|jpeg);base64,/, "");
+//     // const prompt = "Look at this sketch. Does it contain written letters or words that spell out the answer? If it is mostly text/words, respond with 'text'. If it is a drawing, respond with 'drawing'.";
     
+
+//     const prompt = `
+//       Analyze this sketch for 'cheating' in a Pictionary game.
+      
+//       Rules for Cheating:
+//       1. The user MUST be writing actual words or letters to spell out the answer.
+//       2. IGNORE simple geometric shapes like circles, squares, or lines, even if they look like the letters 'O', 'L', or 'I'.
+//       3. A single circle is NOT text. A single rectangle is NOT text.
+//       4. Only flag as 'text' if you see clearly written words (like "APPLE", "DOG") or multiple letters arranged to form a word.
+      
+//       Response format:
+//       - If it is a drawing (even with shapes): respond 'drawing'.
+//       - If it is clearly written text/words: respond 'text'.
+//     `;
+    
+//     const imagePart = {
+//       inlineData: {
+//         data: base64Data,
+//         mimeType: "image/png",
+//       },
+//     };
+
+//     const result = await model.generateContent([prompt, imagePart]); 
+//     const response = await result.response;
+//     const text = response.text().trim().toLowerCase();
+    
+//     console.log("🤖 Gemini Analysis:", text); 
+//     return text.includes("text") ? "text" : "drawing";
+//   } catch (error) {
+//     console.error("AI Check Failed:", error.message);
+//     return "drawing"; 
+//   }
+// };
+
+// socket/gameHandler.js
+
+// socket/gameHandler.js
+
+// ... (imports remain the same) ...
+
+const checkDrawingWithML = async (snapshotBase64, currentWord) => {
+  try {
+    const base64Data = snapshotBase64.replace(/^data:image\/(png|jpeg);base64,/, "");
+    // Ensure we have a valid target word
+    const target = currentWord ? currentWord.trim().toLowerCase() : "unknown";
+
+    const prompt = `
+      You are a strict referee for a Pictionary game. The secret word is "${target}".
+      
+      Analyze the image and provide a JSON response.
+      
+      Step 1: Look for HANDWRITING. 
+      - Do you see any letters or words? 
+      - Does it spell "${target}" or parts of it?
+      - Note: Messy handwriting counts as text.
+      
+      Step 2: Make a Verdict.
+      - If you see the written word "${target}" (even partially), the verdict is 'text'.
+      - If you see BOTH a drawing and the written word, the verdict is 'text'.
+      - Only return 'drawing' if there is NO writing related to the answer.
+
+      Return ONLY a JSON object in this format:
+      {
+        "description": "I see a sketch of a cylinder. I also see the letters B, O, T, T, L, E written.",
+        "verdict": "text" 
+      }
+    `;
+
     const imagePart = {
       inlineData: {
         data: base64Data,
@@ -258,127 +298,113 @@ const checkDrawingWithML = async (snapshotBase64) => {
 
     const result = await model.generateContent([prompt, imagePart]);
     const response = await result.response;
-    const text = response.text().trim().toLowerCase();
+    let text = response.text().trim();
+
+    // Clean up potential markdown formatting
+    text = text.replace(/```json/g, "").replace(/```/g, "").trim();
     
-    console.log("Gemini Analysis:", text); // For debugging
-    return text.includes("text") ? "text" : "drawing";
+    try {
+        const analysis = JSON.parse(text);
+        
+        // --- VISUALIZE WHAT AI SEES ---
+        console.log(`------------------------------------------------`);
+        console.log(`🤖 Target Word: "${target}"`);
+        console.log(`👀 AI Saw: ${analysis.description}`);
+        console.log(`⚖️ Verdict: ${analysis.verdict}`);
+        console.log(`------------------------------------------------`);
+        
+        return analysis.verdict === "text" ? "text" : "drawing";
+    } catch (e) {
+        console.error("JSON Parse Error, falling back to raw check:", text);
+        return text.includes("text") ? "text" : "drawing";
+    }
+
   } catch (error) {
-    console.error("AI Check Failed:", error);
-    return "drawing"; // Fail safe
+    console.error("AI Check Failed:", error.message);
+    return "drawing"; 
   }
 };
 
+// ... (Rest of the file remains exactly as you had it) ...
 
-// cheating penalty
+// --- UPDATED CHEATING LOGIC ---
+
+
 const handleCheating = (io, roomId, drawerId) => {
   const room = rooms.get(roomId);
   if (!room) return;
   const oldscore = room.scores.get(drawerId) || 0;
-  room.scores.set(drawerId, Math.max(0, oldscore - 1));
+  
+  // Apply Penalty
+  room.scores.set(drawerId, Math.max(0, oldscore - 10));
+  
   io.to(roomId).emit("cheatingDetected", {
     drawer : room.usernames.get(drawerId),
-    message: "Drawer attempted cheating! Penalty imposed",
+    message: "⚠️ CHEATING DETECTED! Penalty of -10 applied!",
+    // NEW: Send the updated scores array so frontend can update immediately
+    scores: Array.from(room.scores).map(([id, score]) => ({
+      player: room.usernames.get(id),
+      score
+    }))
   });
 };
 
 const gameHandler = (io, socket) => {
-  // Start Game Listener
   socket.on("startGame", async ({ roomId }) => {
     try {
       const room = rooms.get(roomId);
       if (!room) return socket.emit("error", { message: "Room not found" });
-      if (room.ongoingGame)
-        return socket.emit("error", { message: "Game already running." });
-      if (room.players.size < 2)
-        return socket.emit("error", {
-          message: "Need at least 2 players to start the game.",
-        });
+      if (room.ongoingGame) return socket.emit("error", { message: "Game already running." });
+      if (room.players.size < 2) return socket.emit("error", { message: "Need at least 2 players." });
       await startGame(io, roomId);
     } catch (error) {
-      console.error("Error in the startGame listener:", error);
-      socket.emit("error", { message: "Failed to start game" });
+      console.error("Error starting game:", error);
     }
   });
 
-  // Guess Listener
   socket.on("submitGuess", ({ roomId, guess }) => {
     try {
-      const room = rooms.get(roomId);
-      if (!room) return socket.emit("error", { message: "Room not found" });
-      if (!room.roundActive) return; // Not do anything at all
-      if (socket.id == room.drawer)
-        return socket.emit("error", { message: "Drawer cannot guess" });
-      // Check the correctness of the guess
-      if (isCorrectGuess(guess, room.currentWord)) {
-        const currentScore = room.scores.get(socket.id) || 0;
-        room.scores.set(socket.id, currentScore + 1);
+       const room = rooms.get(roomId);
+       if (!room || !room.roundActive) return;
+       if (socket.id == room.drawer) return socket.emit("error", { message: "Drawer cannot guess" });
+       
+       if (isCorrectGuess(guess, room.currentWord)) {
+         const currentScore = room.scores.get(socket.id) || 0;
+         
+         // [CHANGE 1] Reward increased from +1 to +20
+         room.scores.set(socket.id, currentScore + 20);
 
-        const correctGuesser = room.usernames.get(socket.id);
-        io.to(roomId).emit("correctGuess", {
-          player: correctGuesser,
-          guess,
-          message : `${correctGuesser} guessed correctly.`
-        });
-
-        endRound(io, roomId, {
-          reason: "Guessed correctly",
-          winner: room.usernames.get(socket.id),
-        });
-      } else {
-        socket.emit("guessFeedback", { correct: false, guess });
-      }
-    } catch (error) {
-      console.error("Error in submitGuess Listener:", error);
-      socket.emit("error", { message: "Failed to process the guess" });
-    }
-
-    
+         const correctGuesser = room.usernames.get(socket.id);
+         io.to(roomId).emit("correctGuess", {
+           player: correctGuesser,
+           guess,
+           message : `${correctGuesser} guessed correctly! (+20 pts)`
+         });
+         endRound(io, roomId, { reason: "Guessed correctly", winner: correctGuesser });
+       } else {
+         socket.emit("guessFeedback", { correct: false, guess });
+       }
+    } catch(err) { console.log(err); }
   });
 
-  // Handle Drawing Strokes
-  // socket.on("drawing", async ({ roomId, stroke, snapshot }) => {
-  //   try {
-  //     const room = rooms.get(roomId);
-  //     if (!room) return;
-  //     if (room.drawer !== socket.id) return; // Only, the drawer can draw
-  //     if (!room.roundActive) return;
-
-  //     // Broadcast stroke to other players
-  //     socket.to(roomId).emit("drawing", { stroke });
-
-  //     // Machine Learning Check
-  //     const now = Date.now();
-  //     if (snapshot && now - room.lastMLCheckAt > 3000) {
-  //       room.lastMLCheckAt = now;
-  //       const result = await checkDrawingWithML(snapshot);
-  //       if (result === "text") {
-  //         handleCheating(io, roomId, socket.id);
-  //       }
-  //     }
-  //   } catch (error) {
-  //     console.error("Error in drawing lsitener:", error);
-  //   }
-  // });
   socket.on("drawing", ({ roomId, stroke }) => {
-      const room = rooms.get(roomId);
-      if (!room || room.drawer !== socket.id || !room.roundActive) return;
-      socket.to(roomId).emit("drawing", { stroke });
+     const room = rooms.get(roomId);
+     if (!room || room.drawer !== socket.id || !room.roundActive) return;
+     socket.to(roomId).emit("drawing", { stroke });
   });
 
-  // 2. Add a NEW listener specifically for periodic checks
   socket.on("checkCheating", async ({ roomId, snapshot }) => {
     try {
       const room = rooms.get(roomId);
       if (!room) return;
       
-      // Throttling: Ensure we don't check too often (server-side safety)
       const now = Date.now();
       if (now - room.lastMLCheckAt < 3000) return; 
       room.lastMLCheckAt = now;
 
-      if (room.drawer !== socket.id) return; // Only check the drawer
+      if (room.drawer !== socket.id) return; 
 
-      const result = await checkDrawingWithML(snapshot);
+      const result = await checkDrawingWithML(snapshot , room.currentWord);
       
       if (result === "text") {
         handleCheating(io, roomId, socket.id);
@@ -387,8 +413,6 @@ const gameHandler = (io, socket) => {
       console.error("Error in checkCheating:", error);
     }
   });
-
-  
 };
 
 export { gameHandler, endGame, endRound, clearRoundTimer };
